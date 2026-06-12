@@ -213,11 +213,13 @@ function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [selectedId, setSelectedId] = useState('seedance-1');
+  const [reactFlowInstance, setReactFlowInstance] = useState(null);
   const [providers, setProviders] = useState([]);
   const [runLog, setRunLog] = useState([]);
   const [serverLogs, setServerLogs] = useState([]);
   const [generatedFiles, setGeneratedFiles] = useState([]);
   const [running, setRunning] = useState(false);
+  const [draggingImage, setDraggingImage] = useState(false);
   const [authMode, setAuthMode] = useState('checking');
   const [session, setSession] = useState(null);
   const [passwordToken, setPasswordToken] = useState(() => localStorage.getItem(passwordTokenKey) || '');
@@ -538,7 +540,7 @@ function App() {
     }
   }
 
-  async function uploadImage(file, nodeId) {
+  async function uploadImage(file, nodeId, assetNumber) {
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
@@ -557,12 +559,68 @@ function App() {
       absoluteUrl: data.absoluteUrl,
       filename: data.filename,
       originalName: file.name,
-      assetNumber: assetNumberFor(nodeId),
+      assetNumber: assetNumber || assetNumberFor(nodeId),
       mediaType: 'image',
       output: data.absoluteUrl,
     });
     setRunLog((log) => [...log, `Image uploaded: ${data.filename}`]);
     loadGeneratedFiles().catch(() => {});
+  }
+
+  function hasDraggedImages(event) {
+    return Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file' && item.type.startsWith('image/'));
+  }
+
+  function flowPositionFromDrop(event, index = 0) {
+    const fallback = { x: event.clientX - 120 + index * 28, y: event.clientY - 80 + index * 28 };
+    if (!reactFlowInstance) return fallback;
+    const point = { x: event.clientX + index * 28, y: event.clientY + index * 28 };
+    if (typeof reactFlowInstance.screenToFlowPosition === 'function') {
+      return reactFlowInstance.screenToFlowPosition(point);
+    }
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const canvasPoint = {
+      x: point.x - bounds.left,
+      y: point.y - bounds.top,
+    };
+    if (typeof reactFlowInstance.project === 'function') {
+      return reactFlowInstance.project(canvasPoint);
+    }
+    return canvasPoint;
+  }
+
+  async function dropImagesOnCanvas(event) {
+    event.preventDefault();
+    setDraggingImage(false);
+    const imageFiles = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
+    if (!imageFiles.length) return;
+    const firstAssetNumber = nextAssetNumber();
+    const createdNodes = imageFiles.map((file, index) => {
+      const id = `imageInput-${Date.now()}-${index}`;
+      return {
+        id,
+        type: 'imageInput',
+        position: flowPositionFromDrop(event, index),
+        data: {
+          label: 'Image Input',
+          imageUrl: '',
+          absoluteUrl: '',
+          filename: '',
+          originalName: file.name,
+          assetNumber: firstAssetNumber + index,
+        },
+        file,
+      };
+    });
+    setNodes((items) => [...items, ...createdNodes.map(({ file: _file, ...node }) => node)]);
+    setSelectedId(createdNodes[createdNodes.length - 1].id);
+    for (const node of createdNodes) {
+      try {
+        await uploadImage(node.file, node.id, node.data.assetNumber);
+      } catch (error) {
+        setRunLog((log) => [...log, `Error: ${error.message}`]);
+      }
+    }
   }
 
   async function uploadVideo(file, nodeId) {
@@ -812,7 +870,25 @@ function App() {
         </div>
       </aside>
 
-      <main className="canvas">
+      <main
+        className={`canvas ${draggingImage ? 'dragging-image' : ''}`}
+        onDragEnter={(event) => {
+          if (!hasDraggedImages(event)) return;
+          event.preventDefault();
+          setDraggingImage(true);
+        }}
+        onDragOver={(event) => {
+          if (!hasDraggedImages(event)) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+          setDraggingImage(true);
+        }}
+        onDragLeave={(event) => {
+          if (event.currentTarget.contains(event.relatedTarget)) return;
+          setDraggingImage(false);
+        }}
+        onDrop={dropImagesOnCanvas}
+      >
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -821,12 +897,14 @@ function App() {
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onNodeClick={(_, node) => setSelectedId(node.id)}
+          onInit={setReactFlowInstance}
           fitView
         >
           <Background gap={22} size={1} />
           <Controls />
           <MiniMap pannable zoomable />
         </ReactFlow>
+        {draggingImage && <div className="drop-overlay">松开鼠标上传图片</div>}
       </main>
 
       <aside className="sidebar right">

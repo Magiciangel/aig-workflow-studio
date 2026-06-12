@@ -170,10 +170,31 @@ section h2 {
 }
 
 .canvas {
+  position: relative;
   min-width: 0;
   background:
     linear-gradient(180deg, rgba(255,255,255,.72), rgba(246,247,251,.92)),
     #eef2f8;
+}
+
+.canvas.dragging-image {
+  outline: 2px solid #0ea5e9;
+  outline-offset: -2px;
+}
+
+.drop-overlay {
+  position: absolute;
+  inset: 18px;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  border: 2px dashed #0ea5e9;
+  border-radius: 8px;
+  background: rgba(240, 249, 255, 0.78);
+  color: #075985;
+  font-size: 22px;
+  font-weight: 760;
+  pointer-events: none;
 }
 
 .react-flow__node {
