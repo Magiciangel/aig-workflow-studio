@@ -221,7 +221,7 @@ function seedanceResolutionForMode(mode, resolution) {
 }
 
 function normalizeSeedanceMode(mode) {
-  return mode === 'i2v_reference' ? 'multimodal_reference' : mode;
+  return mode || 't2v';
 }
 
 async function readResponseJson(response) {
@@ -536,7 +536,7 @@ function App() {
     if (videoCount) return 'multimodal_reference';
     if (firstFrameCount && lastFrameCount) return 'i2v_first_last';
     if (firstFrameCount) return 'i2v_first';
-    if (imageCount) return 'multimodal_reference';
+    if (imageCount) return 'i2v_reference';
     return 't2v';
   }
 
@@ -1094,6 +1094,7 @@ function App() {
                   <option value="t2v">t2v</option>
                   <option value="i2v_first">i2v_first</option>
                   <option value="i2v_first_last">i2v_first_last</option>
+                  <option value="i2v_reference">i2v_reference</option>
                   <option value="multimodal_reference">multimodal_reference</option>
                 </select>
               </Field>

@@ -319,7 +319,7 @@ function seedanceNeedsUpscale(requestedResolution, actualResolution) {
 }
 
 function normalizeSeedanceMode(mode) {
-  return mode === 'i2v_reference' ? 'multimodal_reference' : mode;
+  return mode || 't2v';
 }
 
 function shortText(value, limit = 180) {
