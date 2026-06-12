@@ -292,6 +292,22 @@ section h2 {
   font-weight: 760;
 }
 
+.asset-role {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 1;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(14, 116, 144, 0.9);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 760;
+}
+
 .asset-name {
   display: block;
   margin-top: 7px;

@@ -101,12 +101,19 @@ function AssetName({ data, fallback }) {
   return <span className="asset-name">{name}</span>;
 }
 
+function imageRoleLabel(role = 'reference') {
+  if (role === 'firstFrame') return '首帧';
+  if (role === 'lastFrame') return '尾帧';
+  return '参考图';
+}
+
 function ImageInputNode({ data }) {
   return (
     <NodeShell title="Image Input" tone="image">
       {data.imageUrl ? (
         <div className="asset-preview">
           <AssetBadge number={data.assetNumber} />
+          <span className="asset-role">{imageRoleLabel(data.seedanceRole)}</span>
           <img className="node-image" src={apiUrl(data.imageUrl)} alt="" />
           <AssetName data={data} fallback="Image reference" />
         </div>
@@ -214,6 +221,16 @@ function seedanceResolutionForMode(mode, resolution) {
   return resolution || '720p';
 }
 
+async function readResponseJson(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text.slice(0, 500) || response.statusText || 'Empty response from server.' };
+  }
+}
+
 function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -287,19 +304,19 @@ function App() {
 
   const loadProviders = useCallback(async () => {
     const response = await apiFetch('/api/providers');
-    const data = await response.json();
+    const data = await readResponseJson(response);
     setProviders(data.providers || []);
   }, [apiFetch]);
 
   const loadServerLogs = useCallback(async () => {
     const response = await apiFetch('/api/logs?limit=120');
-    const data = await response.json();
+    const data = await readResponseJson(response);
     setServerLogs(data.logs || []);
   }, [apiFetch]);
 
   const loadGeneratedFiles = useCallback(async () => {
     const response = await apiFetch('/api/files');
-    const data = await response.json();
+    const data = await readResponseJson(response);
     setGeneratedFiles(data.files || []);
   }, [apiFetch]);
 
@@ -319,7 +336,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ password: authForm.password }),
       });
-      const data = await response.json();
+      const data = await readResponseJson(response);
       if (!response.ok) {
         setAuthMessage(data.error || '登录失败。');
         return;
@@ -382,7 +399,7 @@ function App() {
     const id = `${type}-${Date.now()}`;
     const base = {
       prompt: { label: 'Prompt', prompt: '' },
-      imageInput: { label: 'Image Input', imageUrl: '', absoluteUrl: '', filename: '' },
+      imageInput: { label: 'Image Input', imageUrl: '', absoluteUrl: '', filename: '', seedanceRole: 'reference' },
       videoInput: { label: 'Video Input', videoUrl: '', absoluteUrl: '', filename: '' },
       seedance: { label: 'Seedance Video', model: 'doubao-seedance-2.0-fast', mode: 't2v', resolution: '720p', ratio: '16:9', duration: 5, generateAudio: false, watermark: false, firstFrame: '', lastFrame: '', referenceImages: '', referenceVideos: '' },
       imageTransform: {
@@ -460,7 +477,7 @@ function App() {
   function orderedImageSources(targetId, runtimeData = null) {
     const sources = runtimeData ? incomingRuntimeNodes(targetId, runtimeData) : incomingNodes(targetId);
     return sources
-      .map((node, index) => ({ node, index, url: imageUrlFromNode(node) }))
+      .map((node, index) => ({ node, index, url: imageUrlFromNode(node), role: node.data?.seedanceRole || 'reference' }))
       .filter((item) => item.url)
       .sort((a, b) => {
         const aNumber = Number(a.node.data?.assetNumber || 0);
@@ -472,11 +489,12 @@ function App() {
       });
   }
 
-  function seedanceAutoMode(baseMode, imageCount, videoCount) {
+  function seedanceAutoMode(baseMode, imageCount, videoCount, firstFrameCount = 0, lastFrameCount = 0) {
     if (baseMode !== 't2v') return baseMode;
     if (videoCount) return 'multimodal_reference';
-    if (imageCount >= 2) return 'i2v_first_last';
-    if (imageCount === 1) return 'i2v_first';
+    if (firstFrameCount && lastFrameCount) return 'i2v_first_last';
+    if (firstFrameCount) return 'i2v_first';
+    if (imageCount) return 'i2v_reference';
     return 't2v';
   }
 
@@ -520,11 +538,17 @@ function App() {
         .filter((source) => source.type === 'imageInput')
         .sort((a, b) => Number(a.data?.assetNumber || 0) - Number(b.data?.assetNumber || 0));
       const video = sourceNodes.find((source) => source.type === 'videoInput');
-      const imageRefLabel = images.length >= 2
-        ? `首帧 Image #${images[0].data.assetNumber || '?'} · 尾帧 Image #${images[1].data.assetNumber || '?'}`
-        : (images[0]?.data?.assetNumber ? `首帧 Image #${images[0].data.assetNumber}` : '');
+      const firstFrame = images.find((image) => image.data.seedanceRole === 'firstFrame');
+      const lastFrame = images.find((image) => image.data.seedanceRole === 'lastFrame');
+      const references = images.filter((image) => (image.data.seedanceRole || 'reference') === 'reference');
+      const imageLabels = [
+        ...references.map((image) => `参考图 #${image.data.assetNumber || '?'}`),
+        firstFrame ? `首帧 #${firstFrame.data.assetNumber || '?'}` : '',
+        lastFrame ? `尾帧 #${lastFrame.data.assetNumber || '?'}` : '',
+      ].filter(Boolean);
+      const imageRefLabel = imageLabels.join(' · ');
       const videoRefLabel = video?.data?.assetNumber ? `Video #${video.data.assetNumber}` : '';
-      const effectiveMode = seedanceAutoMode(node.data.mode || 't2v', images.length, video ? 1 : 0);
+      const effectiveMode = seedanceAutoMode(node.data.mode || 't2v', images.length, video ? 1 : 0, firstFrame ? 1 : 0, lastFrame ? 1 : 0);
       if (
         node.data.imageRefLabel === imageRefLabel
         && node.data.videoRefLabel === videoRefLabel
@@ -563,7 +587,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: videoUrl }),
       });
-      const data = await response.json();
+      const data = await readResponseJson(response);
       if (response.ok) {
         downloaded = data;
         videoUrl = apiUrl(data.url);
@@ -590,7 +614,7 @@ function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dataUrl, filename: file.name }),
     });
-    const data = await response.json();
+    const data = await readResponseJson(response);
     if (!response.ok) throw new Error(data.error || 'Image upload failed.');
     patchNode(nodeId, {
       imageUrl: data.url,
@@ -646,6 +670,7 @@ function App() {
           filename: '',
           originalName: file.name,
           assetNumber: firstAssetNumber + index,
+          seedanceRole: 'reference',
         },
         file,
       };
@@ -673,7 +698,7 @@ function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dataUrl, filename: file.name }),
     });
-    const data = await response.json();
+    const data = await readResponseJson(response);
     if (!response.ok) throw new Error(data.error || 'Video upload failed.');
     patchNode(nodeId, {
       videoUrl: apiUrl(data.url),
@@ -733,16 +758,17 @@ function App() {
         if (node.type === 'seedance') {
           const prompt = promptFor(node.id) || node.data.prompt;
           if (!prompt?.trim()) throw new Error('Seedance node needs a prompt input.');
-          const upstreamImages = orderedImageSources(node.id, runtimeData).map((item) => item.url);
-          const upstreamImage = upstreamImages[0] || '';
-          const upstreamLastFrame = upstreamImages[1] || '';
+          const upstreamImageItems = orderedImageSources(node.id, runtimeData);
+          const upstreamReferenceImages = upstreamImageItems.filter((item) => item.role === 'reference').map((item) => item.url);
+          const upstreamFirstFrame = upstreamImageItems.find((item) => item.role === 'firstFrame')?.url || '';
+          const upstreamLastFrame = upstreamImageItems.find((item) => item.role === 'lastFrame')?.url || '';
           const upstreamVideo = videoFor(node.id);
           const manualReferenceImages = String(node.data.referenceImages || '').split('\n').map((item) => item.trim()).filter(Boolean);
           const referenceVideos = [
             ...String(node.data.referenceVideos || '').split('\n').map((item) => item.trim()).filter(Boolean),
             ...(upstreamVideo ? [upstreamVideo] : []),
           ];
-          const mode = seedanceAutoMode(node.data.mode || 't2v', upstreamImages.length, referenceVideos.length);
+          const mode = seedanceAutoMode(node.data.mode || 't2v', upstreamImageItems.length, referenceVideos.length, upstreamFirstFrame ? 1 : 0, upstreamLastFrame ? 1 : 0);
           const resolution = seedanceResolutionForMode(mode, node.data.resolution);
           if (resolution !== node.data.resolution || mode !== node.data.mode) {
             patchRuntimeNode(node.id, { resolution, effectiveMode: mode });
@@ -750,13 +776,19 @@ function App() {
           if (resolution !== node.data.resolution) {
             setRunLog((log) => [...log, `${mode} does not support ${node.data.resolution}; using ${resolution}.`]);
           }
-          const referenceImages = mode === 'multimodal_reference'
-            ? [...manualReferenceImages, ...upstreamImages]
+          const referenceImages = (mode === 'i2v_reference' || mode === 'multimodal_reference')
+            ? [...manualReferenceImages, ...upstreamReferenceImages]
             : manualReferenceImages;
-          const firstFrame = mode === 'multimodal_reference' ? '' : (node.data.firstFrame || upstreamImage);
+          const firstFrame = (mode === 'i2v_first' || mode === 'i2v_first_last') ? (node.data.firstFrame || upstreamFirstFrame) : node.data.firstFrame;
           const lastFrame = mode === 'i2v_first_last' ? (node.data.lastFrame || upstreamLastFrame) : node.data.lastFrame;
+          if (mode === 'i2v_reference' && referenceImages.length === 0) {
+            throw new Error('i2v_reference needs at least one reference image.');
+          }
+          if (mode === 'i2v_first' && !firstFrame) {
+            throw new Error('i2v_first needs one image marked as first frame.');
+          }
           if (mode === 'i2v_first_last' && (!firstFrame || !lastFrame)) {
-            throw new Error('i2v_first_last needs two connected images: Image #1 as first frame and Image #2 as last frame.');
+            throw new Error('i2v_first_last needs one image marked as first frame and one image marked as last frame.');
           }
           setRunLog((log) => [...log, `Submitting Seedance task from ${node.id}...`]);
           const response = await apiFetch('/api/execute/seedance', {
@@ -764,7 +796,7 @@ function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...node.data, prompt, mode, resolution, firstFrame, lastFrame, referenceImages, referenceVideos }),
           });
-          const data = await response.json();
+          const data = await readResponseJson(response);
           if (!response.ok) throw new Error(data.error || 'Seedance request failed.');
           setRunLog((log) => [...log, `Video completed: ${data.taskId}`]);
           patchPreviewOutputs(node.id, { videoUrl: apiUrl(data.downloaded?.url || data.videoUrl), downloaded: data.downloaded, mediaType: 'video' });
@@ -783,7 +815,7 @@ function App() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ...node.data, body }),
           });
-          const data = await response.json();
+          const data = await readResponseJson(response);
           if (!response.ok) throw new Error(data.error || 'API request failed.');
           setRunLog((log) => [...log, `API output: ${JSON.stringify(data.output ?? data.result).slice(0, 180)}`]);
           patchRuntimeNode(node.id, { output: data.output ?? data.result });
@@ -961,12 +993,20 @@ function App() {
           {selectedNode?.type === 'imageInput' && (
             <>
               <label className="file-button"><ImageIcon size={16} /> Upload Image<input type="file" accept="image/png,image/jpeg,image/webp,image/gif" onChange={(e) => e.target.files?.[0] && uploadImage(e.target.files[0], selectedNode.id).catch((error) => setRunLog((log) => [...log, `Error: ${error.message}`]))} /></label>
+              <Field label="Seedance 用途">
+                <select value={selectedNode.data.seedanceRole || 'reference'} onChange={(e) => patchNode(selectedNode.id, { seedanceRole: e.target.value })}>
+                  <option value="reference">参考图</option>
+                  <option value="firstFrame">首帧</option>
+                  <option value="lastFrame">尾帧</option>
+                </select>
+              </Field>
               <Field label="Image URL">
-                <input value={selectedNode.data.absoluteUrl || selectedNode.data.imageUrl || ''} onChange={(e) => patchNode(selectedNode.id, { imageUrl: e.target.value, absoluteUrl: e.target.value, output: e.target.value, displayName: nameFromUrl(e.target.value), assetNumber: selectedNode.data.assetNumber || nextAssetNumber() })} placeholder="https://..." />
+                <input value={selectedNode.data.absoluteUrl || selectedNode.data.imageUrl || ''} onChange={(e) => patchNode(selectedNode.id, { imageUrl: e.target.value, absoluteUrl: e.target.value, output: e.target.value, displayName: nameFromUrl(e.target.value), assetNumber: selectedNode.data.assetNumber || nextAssetNumber(), seedanceRole: selectedNode.data.seedanceRole || 'reference' })} placeholder="https://..." />
               </Field>
               {(selectedNode.data.imageUrl || selectedNode.data.absoluteUrl) && (
                 <div className="panel-asset">
                   <AssetBadge number={selectedNode.data.assetNumber} />
+                  <span className="asset-role">{imageRoleLabel(selectedNode.data.seedanceRole)}</span>
                   <img className="panel-preview" src={apiUrl(selectedNode.data.imageUrl || selectedNode.data.absoluteUrl)} alt="" />
                   <AssetName data={selectedNode.data} fallback="Image reference" />
                 </div>
