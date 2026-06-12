@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -308,6 +309,11 @@ function seedanceResolutionForMode(mode, resolution) {
   return resolution || '720p';
 }
 
+function seedanceNeedsUpscale(mode, requestedResolution, actualResolution) {
+  return requestedResolution === '1080p' && actualResolution !== '1080p'
+    && (mode === 'i2v_first' || mode === 'i2v_first_last' || mode === 'i2v_reference' || mode === 'multimodal_reference');
+}
+
 function normalizeSeedanceMode(mode) {
   return mode === 'i2v_reference' ? 'multimodal_reference' : mode;
 }
@@ -325,6 +331,63 @@ async function downloadRemote(req, url) {
   await fs.writeFile(filePath, buffer);
   await writeLog('info', 'download_ok', { url, filename, bytes: buffer.length });
   return { filename, url: `/files/${userId(req)}/${filename}` };
+}
+
+function scaleFilterForRatio(ratio = '16:9') {
+  const map = {
+    '16:9': 'scale=1920:1080',
+    '9:16': 'scale=1080:1920',
+    '1:1': 'scale=1080:1080',
+    '4:3': 'scale=1440:1080',
+    '3:4': 'scale=1080:1440',
+    '21:9': 'scale=2520:1080',
+  };
+  return map[ratio] || 'scale=-2:1080';
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${command} exited with ${code}: ${stderr.slice(-800)}`));
+    });
+  });
+}
+
+async function upscaleDownloadedVideo(req, downloaded, ratio) {
+  const sourcePath = safeGeneratedPath(req, downloaded.filename);
+  const stem = path.basename(downloaded.filename).replace(/\.[^.]+$/, '');
+  const targetName = `${stem}-1080p.mp4`;
+  const targetPath = safeGeneratedPath(req, targetName);
+  try {
+    await writeLog('info', 'video_upscale_start', { filename: downloaded.filename, targetName, ratio });
+    await runCommand('ffmpeg', [
+      '-y',
+      '-i', sourcePath,
+      '-vf', scaleFilterForRatio(ratio),
+      '-c:v', 'libx264',
+      '-preset', 'medium',
+      '-crf', '18',
+      '-c:a', 'copy',
+      '-movflags', '+faststart',
+      targetPath,
+    ]);
+    const stats = await fs.stat(targetPath);
+    await writeLog('info', 'video_upscale_ok', { source: downloaded.filename, filename: targetName, bytes: stats.size });
+    return {
+      filename: targetName,
+      url: `/files/${userId(req)}/${targetName}`,
+      upscaledFrom: downloaded,
+      resolution: '1080p',
+    };
+  } catch (error) {
+    await writeLog('error', 'video_upscale_failed', { filename: downloaded.filename, error: error.message });
+    return { ...downloaded, upscaleError: error.message };
+  }
 }
 
 app.get('/api/providers', async (req, res) => {
@@ -476,7 +539,8 @@ app.post('/api/execute/seedance', async (req, res) => {
     const params = req.body || {};
     const model = params.model || 'doubao-seedance-2.0';
     const mode = normalizeSeedanceMode(params.mode || 't2v');
-    const resolution = seedanceResolutionForMode(mode, params.resolution);
+    const requestedResolution = params.resolution || '720p';
+    const resolution = seedanceResolutionForMode(mode, requestedResolution);
     const payload = {
       model,
       mode,
@@ -506,7 +570,7 @@ app.post('/api/execute/seedance', async (req, res) => {
       mode: payload.mode,
       prompt: payload.prompt,
       resolution: payload.resolution,
-      requestedResolution: params.resolution,
+      requestedResolution,
       ratio: payload.ratio,
       duration: payload.duration,
       hasFirstFrame: Boolean(params.firstFrame),
@@ -530,7 +594,10 @@ app.post('/api/execute/seedance', async (req, res) => {
       await writeLog('info', 'seedance_poll', { taskId, attempt: attempt + 1, status: result.status });
       if (result.status === 'completed' || result.status === 'succeeded') {
         const videoUrl = result?.output?.content?.video_url;
-        const downloaded = videoUrl ? await downloadRemote(req, videoUrl) : null;
+        let downloaded = videoUrl ? await downloadRemote(req, videoUrl) : null;
+        if (downloaded && seedanceNeedsUpscale(mode, requestedResolution, resolution)) {
+          downloaded = await upscaleDownloadedVideo(req, downloaded, payload.ratio);
+        }
         await writeLog('info', 'seedance_completed', { taskId, videoUrl, downloaded });
         return res.json({ taskId, status: result.status, result, videoUrl, downloaded });
       }

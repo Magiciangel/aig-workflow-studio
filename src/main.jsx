@@ -217,7 +217,6 @@ function nameFromUrl(url = '') {
 }
 
 function seedanceResolutionForMode(mode, resolution) {
-  if ((mode === 'i2v_first' || mode === 'i2v_first_last' || mode === 'i2v_reference' || mode === 'multimodal_reference') && resolution === '1080p') return '720p';
   return resolution || '720p';
 }
 
@@ -1063,7 +1062,7 @@ function App() {
               <Field label="Reference images"><textarea value={selectedNode.data.referenceImages || ''} onChange={(e) => patchNode(selectedNode.id, { referenceImages: e.target.value })} placeholder="one image URL per line" /></Field>
               <Field label="Reference videos"><textarea value={selectedNode.data.referenceVideos || ''} onChange={(e) => patchNode(selectedNode.id, { referenceVideos: e.target.value })} placeholder="one public video URL per line, or connect Video Input" /></Field>
               <div className="two">
-                <Field label="Resolution"><select value={seedanceResolutionForMode(normalizeSeedanceMode(selectedNode.data.mode), selectedNode.data.resolution)} onChange={(e) => patchNode(selectedNode.id, { resolution: seedanceResolutionForMode(normalizeSeedanceMode(selectedNode.data.mode), e.target.value) })}><option>480p</option><option>720p</option>{!['i2v_first', 'i2v_first_last', 'i2v_reference', 'multimodal_reference'].includes(normalizeSeedanceMode(selectedNode.data.mode)) && <option>1080p</option>}</select></Field>
+                <Field label="Resolution"><select value={seedanceResolutionForMode(normalizeSeedanceMode(selectedNode.data.mode), selectedNode.data.resolution)} onChange={(e) => patchNode(selectedNode.id, { resolution: seedanceResolutionForMode(normalizeSeedanceMode(selectedNode.data.mode), e.target.value) })}><option>480p</option><option>720p</option><option>1080p</option></select></Field>
                 <Field label="Ratio"><select value={selectedNode.data.ratio} onChange={(e) => patchNode(selectedNode.id, { ratio: e.target.value })}><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option><option>21:9</option><option>adaptive</option></select></Field>
               </div>
               <Field label="Duration"><input type="number" min="4" max="15" value={selectedNode.data.duration} onChange={(e) => patchNode(selectedNode.id, { duration: Number(e.target.value) })} /></Field>
