@@ -82,7 +82,7 @@ function SeedanceNode({ data }) {
     <NodeShell title="Seedance Video" tone="video">
       <div className="node-grid">
         <span>Model</span><strong>{data.model?.replace('doubao-', '')}</strong>
-        <span>Mode</span><strong>{data.mode || 't2v'}</strong>
+        <span>Mode</span><strong>{data.effectiveMode || data.mode || 't2v'}</strong>
         <span>Size</span><strong>{data.resolution} · {data.ratio}</strong>
         <span>Duration</span><strong>{data.duration}s</strong>
         {refs && <><span>Refs</span><strong>{refs}</strong></>}
@@ -355,8 +355,8 @@ function App() {
   const refSignature = useMemo(() => JSON.stringify({
     edges: edges.map((edge) => `${edge.source}->${edge.target}`),
     assets: nodes
-      .filter((node) => node.type === 'imageInput' || node.type === 'videoInput')
-      .map((node) => `${node.id}:${node.data.assetNumber || ''}`),
+      .filter((node) => node.type === 'imageInput' || node.type === 'videoInput' || node.type === 'seedance')
+      .map((node) => `${node.id}:${node.data.assetNumber || ''}:${node.data.mode || ''}`),
   }), [edges, nodes]);
 
   useEffect(() => {
@@ -447,6 +447,39 @@ function App() {
       .map((node) => runtimeNode(node, runtimeData));
   }
 
+  function imageUrlFromNode(node) {
+    if (!node) return '';
+    if (node.type === 'imageInput') return node.data.absoluteUrl || apiUrl(node.data.imageUrl) || '';
+    if (node.type === 'preview' && (node.data.mediaType === 'image' || mediaTypeFromUrl(node.data.videoUrl) === 'image')) {
+      return node.data.absoluteUrl || apiUrl(node.data.videoUrl) || '';
+    }
+    if (node.type === 'imageTransform') return node.data.output || '';
+    return '';
+  }
+
+  function orderedImageSources(targetId, runtimeData = null) {
+    const sources = runtimeData ? incomingRuntimeNodes(targetId, runtimeData) : incomingNodes(targetId);
+    return sources
+      .map((node, index) => ({ node, index, url: imageUrlFromNode(node) }))
+      .filter((item) => item.url)
+      .sort((a, b) => {
+        const aNumber = Number(a.node.data?.assetNumber || 0);
+        const bNumber = Number(b.node.data?.assetNumber || 0);
+        if (aNumber && bNumber && aNumber !== bNumber) return aNumber - bNumber;
+        if (aNumber && !bNumber) return -1;
+        if (!aNumber && bNumber) return 1;
+        return a.index - b.index;
+      });
+  }
+
+  function seedanceAutoMode(baseMode, imageCount, videoCount) {
+    if (baseMode !== 't2v') return baseMode;
+    if (videoCount) return 'multimodal_reference';
+    if (imageCount >= 2) return 'i2v_first_last';
+    if (imageCount === 1) return 'i2v_first';
+    return 't2v';
+  }
+
   function incomingPrompt(targetId) {
     const source = incomingNodes(targetId).find((node) => node.type === 'prompt' && node.data.prompt);
     return source?.data?.prompt || '';
@@ -463,17 +496,7 @@ function App() {
   }
 
   function incomingImage(targetId) {
-    const sources = incomingNodes(targetId);
-    const source = sources.find((node) => node.type === 'imageInput')
-      || sources.find((node) => node.type === 'preview' && (node.data.mediaType === 'image' || mediaTypeFromUrl(node.data.videoUrl) === 'image'))
-      || sources.find((node) => node.type === 'imageTransform');
-    if (!source) return '';
-    if (source.type === 'imageInput') return source.data.absoluteUrl || apiUrl(source.data.imageUrl) || '';
-    if (source.type === 'preview' && (source.data.mediaType === 'image' || mediaTypeFromUrl(source.data.videoUrl) === 'image')) {
-      return source.data.absoluteUrl || apiUrl(source.data.videoUrl) || '';
-    }
-    if (source.type === 'imageTransform') return source.data.output || '';
-    return '';
+    return orderedImageSources(targetId)[0]?.url || '';
   }
 
   function incomingVideo(targetId) {
@@ -493,17 +516,27 @@ function App() {
         .filter((edge) => edge.target === node.id)
         .map((edge) => items.find((source) => source.id === edge.source))
         .filter(Boolean);
-      const image = sourceNodes.find((source) => source.type === 'imageInput');
+      const images = sourceNodes
+        .filter((source) => source.type === 'imageInput')
+        .sort((a, b) => Number(a.data?.assetNumber || 0) - Number(b.data?.assetNumber || 0));
       const video = sourceNodes.find((source) => source.type === 'videoInput');
-      const imageRefLabel = image?.data?.assetNumber ? `Image #${image.data.assetNumber}` : '';
+      const imageRefLabel = images.length >= 2
+        ? `首帧 Image #${images[0].data.assetNumber || '?'} · 尾帧 Image #${images[1].data.assetNumber || '?'}`
+        : (images[0]?.data?.assetNumber ? `首帧 Image #${images[0].data.assetNumber}` : '');
       const videoRefLabel = video?.data?.assetNumber ? `Video #${video.data.assetNumber}` : '';
-      if (node.data.imageRefLabel === imageRefLabel && node.data.videoRefLabel === videoRefLabel) return node;
+      const effectiveMode = seedanceAutoMode(node.data.mode || 't2v', images.length, video ? 1 : 0);
+      if (
+        node.data.imageRefLabel === imageRefLabel
+        && node.data.videoRefLabel === videoRefLabel
+        && node.data.effectiveMode === effectiveMode
+      ) return node;
       return {
         ...node,
         data: {
           ...node.data,
           imageRefLabel,
           videoRefLabel,
+          effectiveMode,
         },
       };
     }));
@@ -666,14 +699,7 @@ function App() {
         return source?.data?.prompt || '';
       };
       const imageFor = (targetId) => {
-        const sources = incomingRuntimeNodes(targetId, runtimeData);
-        const source = sources.find((item) => item.type === 'imageInput')
-          || sources.find((item) => item.type === 'preview' && (item.data.mediaType === 'image' || mediaTypeFromUrl(item.data.videoUrl) === 'image'))
-          || sources.find((item) => item.type === 'imageTransform');
-        if (!source) return '';
-        if (source.type === 'imageInput') return source.data.absoluteUrl || apiUrl(source.data.imageUrl) || '';
-        if (source.type === 'preview') return source.data.absoluteUrl || apiUrl(source.data.videoUrl) || '';
-        return source.data.output || '';
+        return orderedImageSources(targetId, runtimeData)[0]?.url || '';
       };
       const videoFor = (targetId) => {
         const sources = incomingRuntimeNodes(targetId, runtimeData);
@@ -707,30 +733,36 @@ function App() {
         if (node.type === 'seedance') {
           const prompt = promptFor(node.id) || node.data.prompt;
           if (!prompt?.trim()) throw new Error('Seedance node needs a prompt input.');
-          const upstreamImage = imageFor(node.id);
+          const upstreamImages = orderedImageSources(node.id, runtimeData).map((item) => item.url);
+          const upstreamImage = upstreamImages[0] || '';
+          const upstreamLastFrame = upstreamImages[1] || '';
           const upstreamVideo = videoFor(node.id);
           const manualReferenceImages = String(node.data.referenceImages || '').split('\n').map((item) => item.trim()).filter(Boolean);
           const referenceVideos = [
             ...String(node.data.referenceVideos || '').split('\n').map((item) => item.trim()).filter(Boolean),
             ...(upstreamVideo ? [upstreamVideo] : []),
           ];
-          let mode = node.data.mode || 't2v';
-          if (mode === 't2v' && referenceVideos.length) mode = 'multimodal_reference';
-          if (mode === 't2v' && upstreamImage) mode = 'i2v_first';
+          const mode = seedanceAutoMode(node.data.mode || 't2v', upstreamImages.length, referenceVideos.length);
           const resolution = seedanceResolutionForMode(mode, node.data.resolution);
+          if (resolution !== node.data.resolution || mode !== node.data.mode) {
+            patchRuntimeNode(node.id, { resolution, effectiveMode: mode });
+          }
           if (resolution !== node.data.resolution) {
-            patchRuntimeNode(node.id, { resolution });
             setRunLog((log) => [...log, `${mode} does not support ${node.data.resolution}; using ${resolution}.`]);
           }
           const referenceImages = mode === 'multimodal_reference'
-            ? [...manualReferenceImages, ...(upstreamImage ? [upstreamImage] : [])]
+            ? [...manualReferenceImages, ...upstreamImages]
             : manualReferenceImages;
           const firstFrame = mode === 'multimodal_reference' ? '' : (node.data.firstFrame || upstreamImage);
+          const lastFrame = mode === 'i2v_first_last' ? (node.data.lastFrame || upstreamLastFrame) : node.data.lastFrame;
+          if (mode === 'i2v_first_last' && (!firstFrame || !lastFrame)) {
+            throw new Error('i2v_first_last needs two connected images: Image #1 as first frame and Image #2 as last frame.');
+          }
           setRunLog((log) => [...log, `Submitting Seedance task from ${node.id}...`]);
           const response = await apiFetch('/api/execute/seedance', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...node.data, prompt, mode, resolution, firstFrame, referenceImages, referenceVideos }),
+            body: JSON.stringify({ ...node.data, prompt, mode, resolution, firstFrame, lastFrame, referenceImages, referenceVideos }),
           });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || 'Seedance request failed.');
