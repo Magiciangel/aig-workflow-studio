@@ -18,8 +18,9 @@ import './styles.css';
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:4177';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const authEnabled = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-const supabase = authEnabled ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const supabaseClientReady = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const supabase = supabaseClientReady ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const passwordTokenKey = 'aig-password-token';
 
 const initialNodes = [
   {
@@ -217,8 +218,10 @@ function App() {
   const [serverLogs, setServerLogs] = useState([]);
   const [generatedFiles, setGeneratedFiles] = useState([]);
   const [running, setRunning] = useState(false);
+  const [authMode, setAuthMode] = useState('checking');
   const [session, setSession] = useState(null);
-  const [authReady, setAuthReady] = useState(!authEnabled);
+  const [passwordToken, setPasswordToken] = useState(() => localStorage.getItem(passwordTokenKey) || '');
+  const [authReady, setAuthReady] = useState(false);
   const [authForm, setAuthForm] = useState({ email: '', password: '', mode: 'signin' });
   const [authMessage, setAuthMessage] = useState('');
   const [providerForm, setProviderForm] = useState({
@@ -230,9 +233,30 @@ function App() {
   });
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedId), [nodes, selectedId]);
+  const isAuthenticated = authMode === 'local'
+    || (authMode === 'password' && Boolean(passwordToken))
+    || (authMode === 'supabase' && Boolean(session));
 
   useEffect(() => {
-    if (!supabase) return undefined;
+    fetch(`${API_BASE}/api/auth/status`)
+      .then((response) => response.json())
+      .then((data) => {
+        setAuthMode(data.mode || 'local');
+        if (data.mode !== 'supabase') setAuthReady(true);
+      })
+      .catch(() => {
+        setAuthMode('local');
+        setAuthReady(true);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (authMode !== 'supabase') return undefined;
+    if (!supabase) {
+      setAuthMessage('前端没有配置 Supabase 登录参数。');
+      setAuthReady(true);
+      return undefined;
+    }
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setAuthReady(true);
@@ -242,7 +266,7 @@ function App() {
       setAuthReady(true);
     });
     return () => subscription.subscription.unsubscribe();
-  }, []);
+  }, [authMode]);
 
   const apiFetch = useCallback((path, options = {}) => {
     const headers = {
@@ -250,8 +274,9 @@ function App() {
     };
     if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
     if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+    if (authMode === 'password' && passwordToken) headers.Authorization = `Bearer ${passwordToken}`;
     return fetch(`${API_BASE}${path}`, { ...options, headers });
-  }, [session]);
+  }, [authMode, passwordToken, session]);
 
   const loadProviders = useCallback(async () => {
     const response = await apiFetch('/api/providers');
@@ -272,15 +297,32 @@ function App() {
   }, [apiFetch]);
 
   useEffect(() => {
-    if (authEnabled && !session) return;
+    if (!authReady || !isAuthenticated) return;
     loadProviders().catch(() => setRunLog((log) => [...log, 'Provider list failed to load.']));
     loadServerLogs().catch(() => {});
     loadGeneratedFiles().catch(() => {});
-  }, [session, loadProviders, loadServerLogs, loadGeneratedFiles]);
+  }, [authReady, isAuthenticated, loadProviders, loadServerLogs, loadGeneratedFiles]);
 
   async function submitAuth(event) {
     event.preventDefault();
     setAuthMessage('');
+    if (authMode === 'password') {
+      const response = await fetch(`${API_BASE}/api/auth/password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: authForm.password }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setAuthMessage(data.error || '登录失败。');
+        return;
+      }
+      localStorage.setItem(passwordTokenKey, data.token);
+      setPasswordToken(data.token);
+      setAuthForm((current) => ({ ...current, password: '' }));
+      setAuthMessage('登录成功。');
+      return;
+    }
     const payload = { email: authForm.email, password: authForm.password };
     const result = authForm.mode === 'signup'
       ? await supabase.auth.signUp(payload)
@@ -293,6 +335,11 @@ function App() {
   }
 
   async function signOut() {
+    if (authMode === 'password') {
+      localStorage.removeItem(passwordTokenKey);
+      setPasswordToken('');
+      return;
+    }
     await supabase?.auth.signOut();
     setSession(null);
   }
@@ -695,7 +742,23 @@ function App() {
     return <div className="auth-page"><div className="auth-card"><p>正在检查登录状态...</p></div></div>;
   }
 
-  if (authEnabled && !session) {
+  if (authMode === 'password' && !passwordToken) {
+    return (
+      <div className="auth-page">
+        <form className="auth-card" onSubmit={submitAuth}>
+          <div className="brand"><Video size={22} /> Workflow Studio</div>
+          <h1>输入访问密码</h1>
+          <Field label="Password">
+            <input type="password" value={authForm.password} onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })} required autoFocus />
+          </Field>
+          {authMessage && <p className="auth-message">{authMessage}</p>}
+          <button type="submit">进入工作台</button>
+        </form>
+      </div>
+    );
+  }
+
+  if (authMode === 'supabase' && !session) {
     return (
       <div className="auth-page">
         <form className="auth-card" onSubmit={submitAuth}>
@@ -722,8 +785,10 @@ function App() {
       <aside className="sidebar left">
         <div className="brand"><Video size={22} /> Workflow Studio</div>
         <div className="account-box">
-          <strong>{session?.user?.email || 'Local mode'}</strong>
-          {authEnabled ? <button onClick={signOut}>Sign out</button> : <span>Supabase auth is not configured.</span>}
+          <strong>{authMode === 'password' ? 'Password mode' : (session?.user?.email || 'Local mode')}</strong>
+          {authMode === 'password' && <button onClick={signOut}>退出登录</button>}
+          {authMode === 'supabase' && <button onClick={signOut}>退出登录</button>}
+          {authMode === 'local' && <span>本地模式，未开启登录。</span>}
         </div>
         <button onClick={() => addNode('prompt')}><Plus size={16} /> Prompt</button>
         <button onClick={() => addNode('imageInput')}><Plus size={16} /> Image Input</button>

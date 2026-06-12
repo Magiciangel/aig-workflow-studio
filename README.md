@@ -15,7 +15,7 @@
 - Generated Files 文件列表，方便下载生成文件
 - Provider / API Key 配置
 - 保存和加载 workflow JSON
-- Supabase 登录系统
+- 单密码登录系统，也支持 Supabase Auth
 - 按用户隔离生成文件和自定义 Provider
 - Server Log 查看和清空
 
@@ -25,7 +25,7 @@
 - Vite
 - React Flow
 - Express
-- Supabase Auth
+- 单密码登录 / Supabase Auth
 - Seedance API
 
 ## 本地开发
@@ -41,7 +41,7 @@ npm run dev
 - 前端：http://127.0.0.1:5173
 - 后端：http://127.0.0.1:4177
 
-如果没有配置 Supabase，应用会进入 local mode，适合本地单人调试。
+如果没有配置登录环境变量，应用会进入 local mode，适合本地单人调试。线上可以优先使用单密码模式。
 
 ## 环境变量
 
@@ -49,6 +49,11 @@ npm run dev
 PORT=4177
 VITE_API_BASE=http://127.0.0.1:4177
 SEEDANCE_API_KEY=replace-with-your-key
+
+# 简单线上登录：设置后，打开网页需要输入这个密码
+APP_PASSWORD=replace-with-one-site-password
+# 可选。修改后会让旧登录 token 失效。不填时默认用 APP_PASSWORD 签名。
+APP_AUTH_SECRET=replace-with-a-long-random-secret
 
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=replace-with-service-role-key
@@ -59,8 +64,23 @@ VITE_SUPABASE_ANON_KEY=replace-with-anon-key
 说明：
 
 - `SEEDANCE_API_KEY` 放在后端，只在服务器使用。
+- `APP_PASSWORD` 设置后会启用单密码登录，优先级高于 Supabase。
+- `APP_AUTH_SECRET` 用来签发登录 token，建议线上设置为一串随机长字符串。
 - `SUPABASE_SERVICE_ROLE_KEY` 只能放在后端，不能暴露到前端。
 - `VITE_SUPABASE_ANON_KEY` 是前端登录使用的 anon key。
+
+## 单密码登录
+
+适合自己用、朋友小范围共用，配置最少：
+
+```bash
+APP_PASSWORD=your-password
+APP_AUTH_SECRET=your-long-random-secret
+```
+
+配置完成后重启服务。打开网页会先进入密码页，输入正确密码后进入工作台。
+
+单密码模式下所有人共用一个工作区，生成文件保存在 `generated/shared/`。如果需要每个人独立账号和独立数据，请使用 Supabase 登录。
 
 ## Supabase 登录
 

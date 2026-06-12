@@ -3,6 +3,7 @@ import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,10 +17,14 @@ const distDir = path.join(root, 'dist');
 const app = express();
 const port = Number(process.env.PORT || 4177);
 const host = process.env.HOST || '127.0.0.1';
+const appPassword = process.env.APP_PASSWORD;
+const appAuthSecret = process.env.APP_AUTH_SECRET || appPassword || 'local-dev-secret';
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const authEnabled = Boolean(supabaseUrl && supabaseServiceRoleKey);
-const supabaseAdmin = authEnabled
+const passwordAuthEnabled = Boolean(appPassword);
+const supabaseAuthEnabled = !passwordAuthEnabled && Boolean(supabaseUrl && supabaseServiceRoleKey);
+const authMode = passwordAuthEnabled ? 'password' : (supabaseAuthEnabled ? 'supabase' : 'local');
+const supabaseAdmin = supabaseAuthEnabled
   ? createClient(supabaseUrl, supabaseServiceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   })
@@ -88,13 +93,59 @@ const builtInProviders = [
   },
 ];
 
+function signPasswordToken(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', appAuthSecret).update(body).digest('base64url');
+  return `${body}.${signature}`;
+}
+
+function verifyPasswordToken(token) {
+  const [body, signature] = String(token || '').split('.');
+  if (!body || !signature) return null;
+  const expected = crypto.createHmac('sha256', appAuthSecret).update(body).digest('base64url');
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (!payload?.exp || Date.now() > payload.exp) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+app.get('/api/auth/status', (_req, res) => {
+  res.json({ mode: authMode });
+});
+
+app.post('/api/auth/password', (req, res) => {
+  if (!passwordAuthEnabled) return res.status(404).json({ error: 'Password login is not enabled.' });
+  const password = String(req.body?.password || '');
+  const expectedBuffer = Buffer.from(appPassword);
+  const actualBuffer = Buffer.from(password);
+  const valid = actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+  if (!valid) return res.status(401).json({ error: '密码不对。' });
+  const token = signPasswordToken({
+    sub: 'shared-password-user',
+    exp: Date.now() + 1000 * 60 * 60 * 24 * 30,
+  });
+  res.json({ token, user: { id: 'shared', email: 'password@aig.local' } });
+});
+
 async function requireAuth(req, res, next) {
-  if (!authEnabled) {
+  if (authMode === 'local') {
     req.user = { id: 'local', email: 'local@aig.local' };
     return next();
   }
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
   if (!token) return res.status(401).json({ error: 'Login required.' });
+  if (authMode === 'password') {
+    const payload = verifyPasswordToken(token);
+    if (!payload) return res.status(401).json({ error: 'Invalid session.' });
+    req.user = { id: 'shared', email: 'password@aig.local' };
+    return next();
+  }
   const { data, error } = await supabaseAdmin.auth.getUser(token);
   if (error || !data?.user) return res.status(401).json({ error: 'Invalid session.' });
   req.user = data.user;
