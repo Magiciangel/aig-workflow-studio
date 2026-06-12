@@ -221,6 +221,10 @@ function seedanceResolutionForMode(mode, resolution) {
   return resolution || '720p';
 }
 
+function normalizeSeedanceMode(mode) {
+  return mode === 'i2v_reference' ? 'multimodal_reference' : mode;
+}
+
 async function readResponseJson(response) {
   const text = await response.text();
   if (!text) return {};
@@ -490,11 +494,12 @@ function App() {
   }
 
   function seedanceAutoMode(baseMode, imageCount, videoCount, firstFrameCount = 0, lastFrameCount = 0) {
-    if (baseMode !== 't2v') return baseMode;
+    const normalizedBaseMode = normalizeSeedanceMode(baseMode);
+    if (normalizedBaseMode !== 't2v') return normalizedBaseMode;
     if (videoCount) return 'multimodal_reference';
     if (firstFrameCount && lastFrameCount) return 'i2v_first_last';
     if (firstFrameCount) return 'i2v_first';
-    if (imageCount) return 'i2v_reference';
+    if (imageCount) return 'multimodal_reference';
     return 't2v';
   }
 
@@ -1038,8 +1043,8 @@ function App() {
                 </select>
               </Field>
               <Field label="Mode">
-                <select value={selectedNode.data.mode || 't2v'} onChange={(e) => {
-                  const mode = e.target.value;
+                <select value={normalizeSeedanceMode(selectedNode.data.mode || 't2v')} onChange={(e) => {
+                  const mode = normalizeSeedanceMode(e.target.value);
                   patchNode(selectedNode.id, {
                     mode,
                     resolution: seedanceResolutionForMode(mode, selectedNode.data.resolution),
@@ -1048,7 +1053,6 @@ function App() {
                   <option value="t2v">t2v</option>
                   <option value="i2v_first">i2v_first</option>
                   <option value="i2v_first_last">i2v_first_last</option>
-                  <option value="i2v_reference">i2v_reference</option>
                   <option value="multimodal_reference">multimodal_reference</option>
                 </select>
               </Field>

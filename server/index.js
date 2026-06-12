@@ -308,6 +308,10 @@ function seedanceResolutionForMode(mode, resolution) {
   return resolution || '720p';
 }
 
+function normalizeSeedanceMode(mode) {
+  return mode === 'i2v_reference' ? 'multimodal_reference' : mode;
+}
+
 async function downloadRemote(req, url) {
   await writeLog('info', 'download_start', { url });
   const response = await fetch(url);
@@ -471,7 +475,7 @@ app.post('/api/execute/seedance', async (req, res) => {
     if (!provider?.apiKey) return res.status(400).json({ error: 'Seedance API key is not configured.' });
     const params = req.body || {};
     const model = params.model || 'doubao-seedance-2.0';
-    const mode = params.mode || 't2v';
+    const mode = normalizeSeedanceMode(params.mode || 't2v');
     const resolution = seedanceResolutionForMode(mode, params.resolution);
     const payload = {
       model,
@@ -486,14 +490,16 @@ app.post('/api/execute/seedance', async (req, res) => {
     if (params.firstFrame) payload.first_frame = params.firstFrame;
     if (params.lastFrame) payload.last_frame = params.lastFrame;
     if (params.referenceImages) {
-      payload.reference_images = Array.isArray(params.referenceImages)
+      const referenceImages = Array.isArray(params.referenceImages)
         ? params.referenceImages
         : String(params.referenceImages).split('\n').map((item) => item.trim()).filter(Boolean);
+      if (referenceImages.length) payload.reference_images = referenceImages;
     }
     if (params.referenceVideos) {
-      payload.reference_videos = Array.isArray(params.referenceVideos)
+      const referenceVideos = Array.isArray(params.referenceVideos)
         ? params.referenceVideos
         : String(params.referenceVideos).split('\n').map((item) => item.trim()).filter(Boolean);
+      if (referenceVideos.length) payload.reference_videos = referenceVideos;
     }
     await writeLog('info', 'seedance_submit', {
       model,
@@ -512,6 +518,10 @@ app.post('/api/execute/seedance', async (req, res) => {
     const taskId = initial.task_id || initial.id;
     if (!taskId) throw new Error('API did not return a task id.');
     await writeLog('info', 'seedance_task_created', { taskId, initial });
+    if (initial.status === 'failed') {
+      await writeLog('error', 'seedance_failed', { taskId, result: initial });
+      return res.status(502).json({ taskId, status: initial.status, result: initial, error: initial.error || 'Task failed.' });
+    }
 
     let result = initial;
     for (let attempt = 0; attempt < 80; attempt += 1) {
