@@ -304,7 +304,7 @@ function fileKind(filename) {
 }
 
 function seedanceResolutionForMode(mode, resolution) {
-  if ((mode === 'i2v_first' || mode === 'i2v_first_last') && resolution === '1080p') return '720p';
+  if ((mode === 'i2v_first' || mode === 'i2v_first_last' || mode === 'i2v_reference' || mode === 'multimodal_reference') && resolution === '1080p') return '720p';
   return resolution || '720p';
 }
 
