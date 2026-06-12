@@ -1,0 +1,17 @@
+[Unit]
+Description=AIG Workflow Studio API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/www/wwwroot/aig-workflow-studio
+Environment=NODE_ENV=production
+EnvironmentFile=/www/wwwroot/aig-workflow-studio/.env
+ExecStart=/usr/bin/node server/index.js
+Restart=always
+RestartSec=3
+User=www
+Group=www
+
+[Install]
+WantedBy=multi-user.target

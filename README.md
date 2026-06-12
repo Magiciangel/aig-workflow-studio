@@ -145,6 +145,12 @@ generated/
 
 ## VPS 部署思路
 
+部署模板见：
+
+```text
+deploy/
+```
+
 推荐方式：
 
 1. 在 VPS 上安装 Node.js。
