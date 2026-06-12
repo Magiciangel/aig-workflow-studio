@@ -20,7 +20,8 @@ cp .env.example .env
 
 ```bash
 PORT=4177
-VITE_API_BASE=https://your-domain.com
+HOST=0.0.0.0
+VITE_API_BASE=http://112.124.39.6:4177
 SEEDANCE_API_KEY=你的 Seedance Key
 
 SUPABASE_URL=https://your-project.supabase.co
@@ -33,6 +34,12 @@ VITE_SUPABASE_ANON_KEY=你的 anon key
 
 ```bash
 npm run build
+```
+
+Express 会同时提供 API、文件服务和构建后的前端页面。没有配置 Nginx 时，可以先访问：
+
+```text
+http://服务器IP:4177
 ```
 
 ## systemd

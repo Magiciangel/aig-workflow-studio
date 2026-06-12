@@ -12,8 +12,10 @@ const providersPath = path.join(dataDir, 'providers.json');
 const generatedDir = path.join(root, 'generated');
 const logsDir = path.join(root, 'logs');
 const appLogPath = path.join(logsDir, 'app.log');
+const distDir = path.join(root, 'dist');
 const app = express();
 const port = Number(process.env.PORT || 4177);
+const host = process.env.HOST || '127.0.0.1';
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const authEnabled = Boolean(supabaseUrl && supabaseServiceRoleKey);
@@ -501,7 +503,15 @@ app.post('/api/download', async (req, res) => {
 });
 
 await ensureData();
-app.listen(port, '127.0.0.1', () => {
-  console.log(`Workflow API listening on http://127.0.0.1:${port}`);
-  writeLog('info', 'server_started', { port }).catch(() => {});
+
+app.use(express.static(distDir));
+app.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
+  if (req.path.startsWith('/api') || req.path.startsWith('/files')) return next();
+  return res.sendFile(path.join(distDir, 'index.html'));
+});
+
+app.listen(port, host, () => {
+  console.log(`Workflow API listening on http://${host}:${port}`);
+  writeLog('info', 'server_started', { host, port }).catch(() => {});
 });
