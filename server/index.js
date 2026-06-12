@@ -5,9 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { createClient } from '@supabase/supabase-js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const root = path.resolve(__dirname, '..');
 const dataDir = path.join(root, 'data');
 const providersPath = path.join(dataDir, 'providers.json');
@@ -358,6 +360,15 @@ function runCommand(command, args) {
   });
 }
 
+function ffmpegCommand() {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  try {
+    return require('@ffmpeg-installer/ffmpeg').path;
+  } catch {
+    return 'ffmpeg';
+  }
+}
+
 async function upscaleDownloadedVideo(req, downloaded, ratio) {
   const sourcePath = safeGeneratedPath(req, downloaded.filename);
   const stem = path.basename(downloaded.filename).replace(/\.[^.]+$/, '');
@@ -365,7 +376,7 @@ async function upscaleDownloadedVideo(req, downloaded, ratio) {
   const targetPath = safeGeneratedPath(req, targetName);
   try {
     await writeLog('info', 'video_upscale_start', { filename: downloaded.filename, targetName, ratio });
-    await runCommand('ffmpeg', [
+    await runCommand(ffmpegCommand(), [
       '-y',
       '-i', sourcePath,
       '-vf', scaleFilterForRatio(ratio),
