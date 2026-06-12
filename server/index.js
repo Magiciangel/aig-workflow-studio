@@ -268,7 +268,10 @@ async function requestJson(provider, routePath, options = {}) {
       status: response.status,
       response: json,
     });
-    throw new Error(`${response.status} ${detail}`);
+    const error = new Error(`${response.status} ${detail}`);
+    error.status = response.status;
+    error.response = json;
+    throw error;
   }
   await writeLog('info', 'api_request_ok', {
     providerId: provider.id,
@@ -306,14 +309,13 @@ function fileKind(filename) {
   return 'file';
 }
 
-function seedanceResolutionForMode(mode, resolution) {
-  if ((mode === 'i2v_first' || mode === 'i2v_first_last' || mode === 'i2v_reference' || mode === 'multimodal_reference') && resolution === '1080p') return '720p';
+function seedanceResolutionForMode(model, _mode, resolution) {
+  if (String(model || '').endsWith('-fast') && resolution === '1080p') return '720p';
   return resolution || '720p';
 }
 
-function seedanceNeedsUpscale(mode, requestedResolution, actualResolution) {
-  return requestedResolution === '1080p' && actualResolution !== '1080p'
-    && (mode === 'i2v_first' || mode === 'i2v_first_last' || mode === 'i2v_reference' || mode === 'multimodal_reference');
+function seedanceNeedsUpscale(requestedResolution, actualResolution) {
+  return requestedResolution === '1080p' && actualResolution !== '1080p';
 }
 
 function normalizeSeedanceMode(mode) {
@@ -551,7 +553,7 @@ app.post('/api/execute/seedance', async (req, res) => {
     const model = params.model || 'doubao-seedance-2.0';
     const mode = normalizeSeedanceMode(params.mode || 't2v');
     const requestedResolution = params.resolution || '720p';
-    const resolution = seedanceResolutionForMode(mode, requestedResolution);
+    const resolution = seedanceResolutionForMode(model, mode, requestedResolution);
     const payload = {
       model,
       mode,
@@ -576,20 +578,35 @@ app.post('/api/execute/seedance', async (req, res) => {
         : String(params.referenceVideos).split('\n').map((item) => item.trim()).filter(Boolean);
       if (referenceVideos.length) payload.reference_videos = referenceVideos;
     }
-    await writeLog('info', 'seedance_submit', {
-      model,
-      mode: payload.mode,
-      prompt: payload.prompt,
-      resolution: payload.resolution,
-      requestedResolution,
-      ratio: payload.ratio,
-      duration: payload.duration,
-      hasFirstFrame: Boolean(params.firstFrame),
-      hasLastFrame: Boolean(params.lastFrame),
-      referenceImageCount: payload.reference_images?.length || 0,
-      referenceVideoCount: payload.reference_videos?.length || 0,
-    });
-    const initial = await requestJson(provider, `/v1/${model}`, { method: 'POST', body: payload });
+    const submitSeedance = async (body, fallbackReason = '') => {
+      await writeLog('info', 'seedance_submit', {
+        model,
+        mode: body.mode,
+        prompt: body.prompt,
+        resolution: body.resolution,
+        requestedResolution,
+        fallbackReason,
+        ratio: body.ratio,
+        duration: body.duration,
+        hasFirstFrame: Boolean(body.first_frame),
+        hasLastFrame: Boolean(body.last_frame),
+        referenceImageCount: body.reference_images?.length || 0,
+        referenceVideoCount: body.reference_videos?.length || 0,
+      });
+      return requestJson(provider, `/v1/${model}`, { method: 'POST', body });
+    };
+    let submitResolution = payload.resolution;
+    let initial;
+    try {
+      initial = await submitSeedance(payload);
+    } catch (error) {
+      const canFallbackTo720 = error.status === 405 && requestedResolution === '1080p' && payload.resolution === '1080p';
+      if (!canFallbackTo720) throw error;
+      await writeLog('info', 'seedance_submit_retry_720p', { model, mode, reason: error.message });
+      payload.resolution = '720p';
+      submitResolution = '720p';
+      initial = await submitSeedance(payload, '1080p rejected with 405');
+    }
     const taskId = initial.task_id || initial.id;
     if (!taskId) throw new Error('API did not return a task id.');
     await writeLog('info', 'seedance_task_created', { taskId, initial });
@@ -606,7 +623,7 @@ app.post('/api/execute/seedance', async (req, res) => {
       if (result.status === 'completed' || result.status === 'succeeded') {
         const videoUrl = result?.output?.content?.video_url;
         let downloaded = videoUrl ? await downloadRemote(req, videoUrl) : null;
-        if (downloaded && seedanceNeedsUpscale(mode, requestedResolution, resolution)) {
+        if (downloaded && seedanceNeedsUpscale(requestedResolution, submitResolution)) {
           downloaded = await upscaleDownloadedVideo(req, downloaded, payload.ratio);
         }
         await writeLog('info', 'seedance_completed', { taskId, videoUrl, downloaded });
