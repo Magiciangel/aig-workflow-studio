@@ -322,6 +322,55 @@ function normalizeSeedanceMode(mode) {
   return mode === 'i2v_reference' ? 'multimodal_reference' : mode;
 }
 
+function shortText(value, limit = 180) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}...`;
+}
+
+function shortUrl(value) {
+  if (!value) return '';
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return shortText(value, 180);
+  }
+}
+
+function seedancePayloadSummary(body = {}) {
+  return {
+    model: body.model,
+    mode: body.mode,
+    resolution: body.resolution,
+    ratio: body.ratio,
+    duration: body.duration,
+    generateAudio: Boolean(body.generate_audio),
+    watermark: Boolean(body.watermark),
+    promptPreview: shortText(body.prompt, 160),
+    promptChars: String(body.prompt || '').length,
+    hasFirstFrame: Boolean(body.first_frame),
+    hasLastFrame: Boolean(body.last_frame),
+    firstFrame: shortUrl(body.first_frame),
+    lastFrame: shortUrl(body.last_frame),
+    referenceImageCount: body.reference_images?.length || 0,
+    referenceVideoCount: body.reference_videos?.length || 0,
+    referenceImages: (body.reference_images || []).map(shortUrl),
+    referenceVideos: (body.reference_videos || []).map(shortUrl),
+  };
+}
+
+function seedanceResponseSummary(value = {}) {
+  if (value.raw) return { raw: shortText(value.raw, 500) };
+  return {
+    taskId: value.task_id || value.id,
+    status: value.status,
+    error: typeof value.error === 'string' ? value.error : value.error?.message,
+    message: value.message,
+    outputVideo: shortUrl(value?.output?.content?.video_url),
+  };
+}
+
 async function downloadRemote(req, url) {
   await writeLog('info', 'download_start', { url });
   const response = await fetch(url);
@@ -546,9 +595,13 @@ app.post('/api/uploads/video', async (req, res) => {
 });
 
 app.post('/api/execute/seedance', async (req, res) => {
+  const trace = {
+    id: crypto.randomBytes(4).toString('hex'),
+    steps: [],
+  };
   try {
     const provider = await resolveProvider('seedance', userId(req));
-    if (!provider?.apiKey) return res.status(400).json({ error: 'Seedance API key is not configured.' });
+    if (!provider?.apiKey) return res.status(400).json({ error: 'Seedance API key is not configured.', debug: trace });
     const params = req.body || {};
     const model = params.model || 'doubao-seedance-2.0';
     const mode = normalizeSeedanceMode(params.mode || 't2v');
@@ -578,8 +631,30 @@ app.post('/api/execute/seedance', async (req, res) => {
         : String(params.referenceVideos).split('\n').map((item) => item.trim()).filter(Boolean);
       if (referenceVideos.length) payload.reference_videos = referenceVideos;
     }
+    trace.request = {
+      model,
+      requestedMode: params.mode || 't2v',
+      normalizedMode: mode,
+      requestedResolution,
+      submitResolution: resolution,
+      ratio: payload.ratio,
+      duration: payload.duration,
+      providerBaseUrl: provider.baseUrl,
+      payload: seedancePayloadSummary(payload),
+    };
+    await writeLog('info', 'seedance_trace_start', { traceId: trace.id, request: trace.request });
     const submitSeedance = async (body, fallbackReason = '') => {
+      const url = joinUrl(provider.baseUrl, `/v1/${model}`);
+      const step = {
+        stage: 'submit',
+        method: 'POST',
+        url,
+        fallbackReason,
+        payload: seedancePayloadSummary(body),
+      };
+      trace.steps.push(step);
       await writeLog('info', 'seedance_submit', {
+        traceId: trace.id,
         model,
         mode: body.mode,
         prompt: body.prompt,
@@ -593,7 +668,20 @@ app.post('/api/execute/seedance', async (req, res) => {
         referenceImageCount: body.reference_images?.length || 0,
         referenceVideoCount: body.reference_videos?.length || 0,
       });
-      return requestJson(provider, `/v1/${model}`, { method: 'POST', body });
+      try {
+        const result = await requestJson(provider, `/v1/${model}`, { method: 'POST', body });
+        step.status = 'ok';
+        step.response = seedanceResponseSummary(result);
+        await writeLog('info', 'seedance_trace_submit_ok', { traceId: trace.id, step });
+        return result;
+      } catch (error) {
+        step.status = 'error';
+        step.httpStatus = error.status;
+        step.error = error.message;
+        step.response = seedanceResponseSummary(error.response);
+        await writeLog('error', 'seedance_trace_submit_error', { traceId: trace.id, step });
+        throw error;
+      }
     };
     let submitResolution = payload.resolution;
     let initial;
@@ -603,16 +691,24 @@ app.post('/api/execute/seedance', async (req, res) => {
       const canFallbackTo720 = error.status === 405 && requestedResolution === '1080p' && payload.resolution === '1080p';
       if (!canFallbackTo720) throw error;
       await writeLog('info', 'seedance_submit_retry_720p', { model, mode, reason: error.message });
+      trace.steps.push({
+        stage: 'fallback',
+        fromResolution: payload.resolution,
+        toResolution: '720p',
+        reason: error.message,
+      });
       payload.resolution = '720p';
       submitResolution = '720p';
       initial = await submitSeedance(payload, '1080p rejected with 405');
     }
     const taskId = initial.task_id || initial.id;
     if (!taskId) throw new Error('API did not return a task id.');
+    trace.taskId = taskId;
     await writeLog('info', 'seedance_task_created', { taskId, initial });
     if (initial.status === 'failed') {
       await writeLog('error', 'seedance_failed', { taskId, result: initial });
-      return res.status(502).json({ taskId, status: initial.status, result: initial, error: initial.error || 'Task failed.' });
+      trace.steps.push({ stage: 'initial_status', status: initial.status, response: seedanceResponseSummary(initial) });
+      return res.status(502).json({ taskId, status: initial.status, result: initial, error: initial.error || 'Task failed.', debug: trace });
     }
 
     let result = initial;
@@ -620,25 +716,35 @@ app.post('/api/execute/seedance', async (req, res) => {
       await new Promise((resolve) => setTimeout(resolve, 4000));
       result = await requestJson(provider, `/v1/query/${model}/${taskId}`, { method: 'POST' });
       await writeLog('info', 'seedance_poll', { taskId, attempt: attempt + 1, status: result.status });
+      if (attempt === 0 || result.status === 'completed' || result.status === 'succeeded' || result.status === 'failed' || (attempt + 1) % 10 === 0) {
+        trace.steps.push({ stage: 'poll', attempt: attempt + 1, status: result.status, response: seedanceResponseSummary(result) });
+      }
       if (result.status === 'completed' || result.status === 'succeeded') {
         const videoUrl = result?.output?.content?.video_url;
         let downloaded = videoUrl ? await downloadRemote(req, videoUrl) : null;
         if (downloaded && seedanceNeedsUpscale(requestedResolution, submitResolution)) {
           downloaded = await upscaleDownloadedVideo(req, downloaded, payload.ratio);
         }
+        trace.steps.push({
+          stage: 'completed',
+          videoUrl: shortUrl(videoUrl),
+          downloaded,
+          upscaled: seedanceNeedsUpscale(requestedResolution, submitResolution),
+        });
         await writeLog('info', 'seedance_completed', { taskId, videoUrl, downloaded });
-        return res.json({ taskId, status: result.status, result, videoUrl, downloaded });
+        return res.json({ taskId, status: result.status, result, videoUrl, downloaded, debug: trace });
       }
       if (result.status === 'failed') {
         await writeLog('error', 'seedance_failed', { taskId, result });
-        return res.status(502).json({ taskId, status: result.status, result, error: result.error || 'Task failed.' });
+        return res.status(502).json({ taskId, status: result.status, result, error: result.error || 'Task failed.', debug: trace });
       }
     }
     await writeLog('error', 'seedance_timeout', { taskId, result });
-    res.status(504).json({ taskId, status: 'timeout', result, error: 'Polling timed out.' });
+    trace.steps.push({ stage: 'timeout', response: seedanceResponseSummary(result) });
+    res.status(504).json({ taskId, status: 'timeout', result, error: 'Polling timed out.', debug: trace });
   } catch (error) {
-    await writeLog('error', 'seedance_error', { error: error.message });
-    res.status(500).json({ error: error.message });
+    await writeLog('error', 'seedance_error', { traceId: trace.id, error: error.message, debug: trace });
+    res.status(500).json({ error: error.message, debug: trace });
   }
 });
 

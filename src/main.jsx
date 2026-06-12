@@ -234,6 +234,44 @@ async function readResponseJson(response) {
   }
 }
 
+function formatDebugValue(value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
+function formatSeedanceDebug(debug) {
+  if (!debug) return [];
+  const lines = [`Seedance debug trace: ${debug.id || 'unknown'}`];
+  if (debug.request) {
+    const request = debug.request;
+    lines.push(`Seedance request: model=${request.model}, mode=${request.normalizedMode}, resolution=${request.submitResolution}, requested=${request.requestedResolution}`);
+    if (request.payload) {
+      lines.push(`Seedance payload: refs=${request.payload.referenceImageCount || 0}, videos=${request.payload.referenceVideoCount || 0}, first=${request.payload.hasFirstFrame ? 'yes' : 'no'}, last=${request.payload.hasLastFrame ? 'yes' : 'no'}, promptChars=${request.payload.promptChars || 0}`);
+      if (request.payload.referenceImages?.length) lines.push(`Reference images: ${request.payload.referenceImages.join(' | ')}`);
+      if (request.payload.referenceVideos?.length) lines.push(`Reference videos: ${request.payload.referenceVideos.join(' | ')}`);
+    }
+  }
+  (debug.steps || []).forEach((step, index) => {
+    const label = `${step.stage || 'step'} ${index + 1}`;
+    if (step.stage === 'submit') {
+      lines.push(`${label}: ${step.method || 'POST'} ${step.url}`);
+      lines.push(`${label} payload: mode=${step.payload?.mode}, resolution=${step.payload?.resolution}, ratio=${step.payload?.ratio}, duration=${step.payload?.duration}`);
+      if (step.status === 'error') lines.push(`${label} error: HTTP ${step.httpStatus || '?'} ${step.error || ''}`.trim());
+      if (step.status === 'ok') lines.push(`${label} ok: task=${step.response?.taskId || 'unknown'}, status=${step.response?.status || 'unknown'}`);
+      const responseText = formatDebugValue(step.response?.raw || step.response?.message || step.response?.error);
+      if (responseText) lines.push(`${label} upstream: ${responseText}`);
+    } else if (step.stage === 'fallback') {
+      lines.push(`${label}: ${step.fromResolution} -> ${step.toResolution}, reason=${step.reason}`);
+    } else if (step.stage === 'poll') {
+      lines.push(`${label}: attempt=${step.attempt}, status=${step.status}`);
+    } else {
+      lines.push(`${label}: ${formatDebugValue(step)}`);
+    }
+  });
+  return lines;
+}
+
 function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -801,7 +839,11 @@ function App() {
             body: JSON.stringify({ ...node.data, prompt, mode, resolution, firstFrame, lastFrame, referenceImages, referenceVideos }),
           });
           const data = await readResponseJson(response);
-          if (!response.ok) throw new Error(data.error || 'Seedance request failed.');
+          if (!response.ok) {
+            const debugLines = formatSeedanceDebug(data.debug);
+            if (debugLines.length) setRunLog((log) => [...log, ...debugLines]);
+            throw new Error(data.error || 'Seedance request failed.');
+          }
           setRunLog((log) => [...log, `Video completed: ${data.taskId}`]);
           patchPreviewOutputs(node.id, { videoUrl: apiUrl(data.downloaded?.url || data.videoUrl), downloaded: data.downloaded, mediaType: 'video' });
         }
