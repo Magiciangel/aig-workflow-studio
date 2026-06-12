@@ -303,6 +303,11 @@ function fileKind(filename) {
   return 'file';
 }
 
+function seedanceResolutionForMode(mode, resolution) {
+  if ((mode === 'i2v_first' || mode === 'i2v_first_last') && resolution === '1080p') return '720p';
+  return resolution || '720p';
+}
+
 async function downloadRemote(req, url) {
   await writeLog('info', 'download_start', { url });
   const response = await fetch(url);
@@ -466,11 +471,13 @@ app.post('/api/execute/seedance', async (req, res) => {
     if (!provider?.apiKey) return res.status(400).json({ error: 'Seedance API key is not configured.' });
     const params = req.body || {};
     const model = params.model || 'doubao-seedance-2.0';
+    const mode = params.mode || 't2v';
+    const resolution = seedanceResolutionForMode(mode, params.resolution);
     const payload = {
       model,
-      mode: params.mode || 't2v',
+      mode,
       prompt: params.prompt || '',
-      resolution: params.resolution || '720p',
+      resolution,
       ratio: params.ratio || '16:9',
       duration: Number(params.duration || 5),
       generate_audio: Boolean(params.generateAudio),
@@ -493,6 +500,7 @@ app.post('/api/execute/seedance', async (req, res) => {
       mode: payload.mode,
       prompt: payload.prompt,
       resolution: payload.resolution,
+      requestedResolution: params.resolution,
       ratio: payload.ratio,
       duration: payload.duration,
       hasFirstFrame: Boolean(params.firstFrame),

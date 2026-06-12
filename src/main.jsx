@@ -209,6 +209,11 @@ function nameFromUrl(url = '') {
   }
 }
 
+function seedanceResolutionForMode(mode, resolution) {
+  if ((mode === 'i2v_first' || mode === 'i2v_first_last') && resolution === '1080p') return '720p';
+  return resolution || '720p';
+}
+
 function App() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -712,6 +717,11 @@ function App() {
           let mode = node.data.mode || 't2v';
           if (mode === 't2v' && referenceVideos.length) mode = 'multimodal_reference';
           if (mode === 't2v' && upstreamImage) mode = 'i2v_first';
+          const resolution = seedanceResolutionForMode(mode, node.data.resolution);
+          if (resolution !== node.data.resolution) {
+            patchRuntimeNode(node.id, { resolution });
+            setRunLog((log) => [...log, `${mode} does not support ${node.data.resolution}; using ${resolution}.`]);
+          }
           const referenceImages = mode === 'multimodal_reference'
             ? [...manualReferenceImages, ...(upstreamImage ? [upstreamImage] : [])]
             : manualReferenceImages;
@@ -720,7 +730,7 @@ function App() {
           const response = await apiFetch('/api/execute/seedance', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...node.data, prompt, mode, firstFrame, referenceImages, referenceVideos }),
+            body: JSON.stringify({ ...node.data, prompt, mode, resolution, firstFrame, referenceImages, referenceVideos }),
           });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || 'Seedance request failed.');
@@ -956,7 +966,13 @@ function App() {
                 </select>
               </Field>
               <Field label="Mode">
-                <select value={selectedNode.data.mode || 't2v'} onChange={(e) => patchNode(selectedNode.id, { mode: e.target.value })}>
+                <select value={selectedNode.data.mode || 't2v'} onChange={(e) => {
+                  const mode = e.target.value;
+                  patchNode(selectedNode.id, {
+                    mode,
+                    resolution: seedanceResolutionForMode(mode, selectedNode.data.resolution),
+                  });
+                }}>
                   <option value="t2v">t2v</option>
                   <option value="i2v_first">i2v_first</option>
                   <option value="i2v_first_last">i2v_first_last</option>
@@ -971,7 +987,7 @@ function App() {
               <Field label="Reference images"><textarea value={selectedNode.data.referenceImages || ''} onChange={(e) => patchNode(selectedNode.id, { referenceImages: e.target.value })} placeholder="one image URL per line" /></Field>
               <Field label="Reference videos"><textarea value={selectedNode.data.referenceVideos || ''} onChange={(e) => patchNode(selectedNode.id, { referenceVideos: e.target.value })} placeholder="one public video URL per line, or connect Video Input" /></Field>
               <div className="two">
-                <Field label="Resolution"><select value={selectedNode.data.resolution} onChange={(e) => patchNode(selectedNode.id, { resolution: e.target.value })}><option>480p</option><option>720p</option><option>1080p</option></select></Field>
+                <Field label="Resolution"><select value={seedanceResolutionForMode(selectedNode.data.mode, selectedNode.data.resolution)} onChange={(e) => patchNode(selectedNode.id, { resolution: seedanceResolutionForMode(selectedNode.data.mode, e.target.value) })}><option>480p</option><option>720p</option>{!(selectedNode.data.mode === 'i2v_first' || selectedNode.data.mode === 'i2v_first_last') && <option>1080p</option>}</select></Field>
                 <Field label="Ratio"><select value={selectedNode.data.ratio} onChange={(e) => patchNode(selectedNode.id, { ratio: e.target.value })}><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option><option>21:9</option><option>adaptive</option></select></Field>
               </div>
               <Field label="Duration"><input type="number" min="4" max="15" value={selectedNode.data.duration} onChange={(e) => patchNode(selectedNode.id, { duration: Number(e.target.value) })} /></Field>
